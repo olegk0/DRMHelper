@@ -16,29 +16,44 @@ extern "C"
 		plane_type_overlay,
 		plane_type_primary,
 		plane_type_cursor,
-	} dh_fbtype_t;
+	} DhPlaneType;
 
-	typedef struct _dh_fb_info_s
+	// read only, do not change
+	typedef struct _DhPlaneInfo
 	{
+		uint8_t plane_uid;
+		DhPlaneType type;
 		drmModeFB2 fbi;
+		uint16_t x, y;
+		uint8_t zpos;
+		uint8_t fullscreen;
 		//		uint8_t depth;
 		uint8_t bpp;
 		uint64_t fb_size;
 		void *map_bufs[3]; // void *fb_buf -> map_bufs[0]
-	} dh_fb_info_s;
+	} DhPlaneInfo;
 
-	int DrmHelperInit(int drm_id);
+	// read only, do not change
+	typedef struct _DhHwInfo
+	{
+		uint8_t count_planes[plane_type_cursor + 1];
+		uint8_t bpp, depth;
+		uint16_t width, height;
+		uint16_t pitch;
+	} DhHwInfo;
+
+	DhHwInfo *DrmHelperInit(int drm_id);
 	void DrmHelperFree(void);
 
+	// for primary: "fullscreen" not used
+	// if "width" and or "height" = 0 -> set default
 	// return fb_id or -Error
-	int DrmHelperAllocFb(dh_fbtype_t type, uint32_t fourcc_format, int width, int height, int x, int y,
-						 uint8_t fullscreen, dh_fb_info_s *fb_info);
+	DhPlaneInfo *DrmHelperAllocFb(DhPlaneType type, uint32_t fourcc_format, uint16_t width, uint16_t height,
+								  uint16_t x, uint16_t y, uint8_t fullscreen);
+	int DrmHelperFreeFb(DhPlaneInfo *fb_info);
 
-	int DrmHelperFreeFb(int fb_id);
-
-	int DrmHelperSetPlanePos(int fb_id, int x, int y);
-
-	int DrmHelperSetZpos(int fb_id, uint8_t zpos);
+	int DrmHelperSetPlanePos(DhPlaneInfo *fb_info, int x, int y);
+	int DrmHelperSetZpos(DhPlaneInfo *fb_info, uint8_t zpos);
 
 #ifndef drmModeMapDumbBuffer
 	extern int drmModeMapDumbBuffer(int fd, uint32_t handle, uint64_t *offset);

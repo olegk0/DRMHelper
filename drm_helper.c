@@ -45,7 +45,6 @@
 
 typedef struct _plane_s
 {
-	dh_fbtype_t type;		// ro
 	uint32_t plane_id;		// ro
 							// Formats supported
 	uint32_t count_formats; // ro
@@ -56,12 +55,9 @@ typedef struct _plane_s
 	// Zpos
 	int zpos_min; // ro
 	int zpos_max; // ro
-	int zpos;
 	// FB
-	dh_fb_info_s fb_info;
-	uint32_t x, y;
-	uint32_t crtc_w, crtc_h;
-	char fullscreen;
+	DhPlaneInfo fb_info;
+	uint16_t crtc_w, crtc_h;
 } plane_s;
 
 typedef struct _dev_s
@@ -76,12 +72,12 @@ typedef struct _dev_s
 	drmModeCrtcPtr saved_crtc;
 	// Primary Fb
 	drmModeFB primary_fb_info;
-	dh_fb_info_s primary_fb;
-	// uint64_t primary_fb_size;
-	// void *primary_fb_plane;
+	DhPlaneInfo primary_fb;
 	//  Planes
 	int count_planes;
 	plane_s *planes;
+	//
+	DhHwInfo dh_hw_info;
 } dev_s;
 
 static dev_s *dev = NULL;
@@ -110,7 +106,7 @@ static int drm_open(const char *path)
 
 static int drm_find_crt(void)
 {
-	int i;
+	int ret = -ENXIO;
 
 	drmModeRes *res = drmModeGetResources(dev->fd);
 	if (!res)
@@ -121,8 +117,9 @@ static int drm_find_crt(void)
 	{
 		// if (res->count_connectors > 0) {
 		// dev->connectors = (connector_s *)calloc(res->count_connectors,sizeof(connector_s));
-		//  find all available connectors
-		for (i = 0; i < res->count_connectors; i++)
+		//  connectors loop
+		int i = 0;
+		while (i < res->count_connectors && ret)
 		{
 			dev->crtc_id = 0;
 			// connector_s *connector = &dev->connectors[i];
@@ -173,24 +170,31 @@ static int drm_find_crt(void)
 						}
 						else
 						{
+							dev->primary_fb.type = plane_type_primary;
+							dev->dh_hw_info.count_planes[plane_type_primary] = 1;
+							dev->dh_hw_info.height = fb->height;
+							dev->dh_hw_info.width = fb->width;
+							dev->dh_hw_info.bpp = fb->bpp;
+							dev->dh_hw_info.depth = fb->depth;
+							dev->dh_hw_info.pitch = fb->pitch;
 							memcpy(&dev->primary_fb_info, fb, sizeof(drmModeFB));
+							ret = 0;
 							drmModeFreeFB(fb);
 						}
 						drmModeFreeCrtc(crtc);
-						drmModeFreeConnector(conn);
-						drmModeFreeResources(res);
-						return 0;
 					}
 				}
 				drmModeFreeConnector(conn);
 			}
+
+			i++;
 		} // loop connectors
 		/*} else {
 			fprintf(stderr, "connectors not found");
 		}*/
 		drmModeFreeResources(res);
 	}
-	return -ENXIO;
+	return ret;
 }
 
 static int parse_planes(dev_s *dev)
@@ -216,6 +220,7 @@ static int parse_planes(dev_s *dev)
 			for (int pli = 0; pli < plane_resources->count_planes; pli++)
 			{
 				plane_s *cur_plane = &dev->planes[pli];
+				cur_plane->fb_info.plane_uid = pli + 1;
 				drmModePlane *ovr = drmModeGetPlane(dev->fd, plane_resources->planes[pli]);
 				if (!ovr)
 				{
@@ -274,12 +279,16 @@ static int parse_planes(dev_s *dev)
 										cur_plane->zpos_min = prop->values[0];
 										cur_plane->zpos_max = prop->values[1];
 									}
-									cur_plane->zpos = props->prop_values[pri];
+									cur_plane->fb_info.zpos = props->prop_values[pri];
 									// set_plane_property(dev->fd, ovr->plane_id, prop->name, prop->prop_id, 2); //0-bg 1-fg 2-cursor
 								}
 								else if (strcmp(prop->name, "type") == 0)
 								{
-									cur_plane->type = props->prop_values[pri];
+									cur_plane->fb_info.type = props->prop_values[pri];
+									if (cur_plane->fb_info.type <= plane_type_cursor)
+									{
+										dev->dh_hw_info.count_planes[cur_plane->fb_info.type]++;
+									}
 								}
 								ret = 0;
 								// dump_prop(dev->fd, prop, props->props[pri], props->prop_values[pri]);
@@ -331,7 +340,7 @@ static int set_plane_property_by_name(plane_s *plane, char *prop_name, uint64_t 
 }
 
 //************************************ BO management ***********************************
-static int bo_map(int fd, dh_fb_info_s *fb_info)
+static int bo_map(int fd, DhPlaneInfo *fb_info)
 {
 	void *map;
 	int ret;
@@ -351,7 +360,7 @@ static int bo_map(int fd, dh_fb_info_s *fb_info)
 	return 0;
 }
 
-static void bo_unmap(dh_fb_info_s *fb_info)
+static void bo_unmap(DhPlaneInfo *fb_info)
 {
 	if (!fb_info->map_bufs[0])
 		return;
@@ -360,7 +369,7 @@ static void bo_unmap(dh_fb_info_s *fb_info)
 	fb_info->map_bufs[0] = NULL;
 }
 
-void bo_destroy(int fd, dh_fb_info_s *fbi)
+void bo_destroy(int fd, DhPlaneInfo *fbi)
 {
 	int ret;
 
@@ -369,7 +378,7 @@ void bo_destroy(int fd, dh_fb_info_s *fbi)
 		fprintf(stderr, "failed to destroy dumb buffer: %s\n", strerror(errno));
 }
 
-int bo_create(int fd, dh_fb_info_s *fb_info)
+int bo_create(int fd, DhPlaneInfo *fb_info)
 {
 	unsigned int virtual_height;
 	unsigned int bpp;
@@ -585,7 +594,7 @@ int bo_create(int fd, dh_fb_info_s *fb_info)
 	return ret;
 }
 //***********************************************************************
-static int bo_fb_create(int fd, dh_fb_info_s *fb_info)
+static int bo_fb_create(int fd, DhPlaneInfo *fb_info)
 {
 	int ret = bo_create(fd, fb_info);
 
@@ -622,7 +631,7 @@ static void free_primary_fb()
 	}
 }
 
-static int alloc_primary_fb(uint32_t fourcc_format, int width, int height)
+static int alloc_primary_fb(uint32_t fourcc_format, uint16_t width, uint16_t height, uint16_t x, uint16_t y)
 {
 	if (dev->primary_fb.map_bufs[0])
 	{
@@ -630,7 +639,7 @@ static int alloc_primary_fb(uint32_t fourcc_format, int width, int height)
 		return -EBUSY;
 	}
 
-	dh_fb_info_s *primary_fb = &dev->primary_fb;
+	DhPlaneInfo *primary_fb = &dev->primary_fb;
 
 	if (width > 0)
 	{
@@ -639,7 +648,9 @@ static int alloc_primary_fb(uint32_t fourcc_format, int width, int height)
 	else
 	{
 		primary_fb->fbi.width = dev->primary_fb_info.width;
+		//		x = 0;
 	}
+
 	if (height > 0)
 	{
 		primary_fb->fbi.height = height;
@@ -647,6 +658,7 @@ static int alloc_primary_fb(uint32_t fourcc_format, int width, int height)
 	else
 	{
 		primary_fb->fbi.height = dev->primary_fb_info.height;
+		//		y = 0;
 	}
 	primary_fb->fbi.pixel_format = fourcc_format;
 
@@ -670,18 +682,18 @@ static int alloc_primary_fb(uint32_t fourcc_format, int width, int height)
 		}
 		else
 		{
-			if (drmModeSetCrtc(dev->fd, dev->crtc_id, dev->primary_fb.fbi.fb_id, 0, 0, &dev->conn_id, 1,
+			if (drmModeSetCrtc(dev->fd, dev->crtc_id, dev->primary_fb.fbi.fb_id, x, y, &dev->conn_id, 1,
 							   &dev->mode_info) == 0)
 			{
+				primary_fb->x = x;
+				primary_fb->y = y;
 				return 0;
 			}
 			fprintf(stderr, "drmModeSetCrtc failed\n");
 		}
-		if (ret)
-		{
-			fprintf(stderr, "failed to enable primary_fb: %s\n", strerror(errno));
-			free_primary_fb();
-		}
+
+		fprintf(stderr, "failed to enable primary_fb: %s\n", strerror(errno));
+		free_primary_fb();
 	}
 	return ret;
 }
@@ -699,12 +711,12 @@ int set_plane_property_zpos(plane_s *plane, uint8_t value)
 	}
 	else
 	{
-		if (plane->zpos != value)
+		if (plane->fb_info.zpos != value)
 		{
 			ret = set_plane_property_by_name(plane, "zpos", value);
 			if (ret == 0)
 			{
-				plane->zpos = value;
+				plane->fb_info.zpos = value;
 			}
 		}
 	}
@@ -712,9 +724,8 @@ int set_plane_property_zpos(plane_s *plane, uint8_t value)
 	return ret;
 }
 
-void free_plane(int plane_pid)
+void free_plane(plane_s *plane)
 {
-	plane_s *plane = &dev->planes[plane_pid];
 	set_plane_property_zpos(plane, 0);
 	if (plane->fb_info.map_bufs[0])
 	{
@@ -724,16 +735,16 @@ void free_plane(int plane_pid)
 	}
 }
 
-static int alloc_plane(int plane_pid, uint32_t fourcc_format, int width, int height, int x, int y, uint8_t fullscreen)
+static int alloc_plane(plane_s *plane, uint32_t fourcc_format, uint16_t width, uint16_t height,
+					   uint16_t x, uint16_t y, uint8_t fullscreen)
 {
-	plane_s *plane = &dev->planes[plane_pid];
 	if (plane->fb_info.map_bufs[0])
 	{
-		fprintf(stderr, "plane %d in use\n", plane_pid);
+		fprintf(stderr, "plane %d in use\n", plane->plane_id);
 		return -EBUSY;
 	}
 
-	int crtc_x, crtc_y, crtc_w, crtc_h;
+	int crtc_w, crtc_h;
 
 	plane->fb_info.fbi.width = width;
 	plane->fb_info.fbi.height = height;
@@ -750,17 +761,23 @@ static int alloc_plane(int plane_pid, uint32_t fourcc_format, int width, int hei
 	int ret = bo_fb_create(dev->fd, &plane->fb_info);
 	if (ret == 0)
 	{
+		if (width == 0)
+		{
+			width = dev->mode_info.hdisplay;
+		}
+
+		if (height == 0)
+		{
+			height = dev->mode_info.vdisplay;
+		}
+
 		if (fullscreen)
 		{
-			crtc_x = 0;
-			crtc_y = 0;
 			crtc_w = dev->mode_info.hdisplay;
 			crtc_h = dev->mode_info.vdisplay;
 		}
 		else
 		{
-			crtc_x = x;
-			crtc_y = y;
 			crtc_w = width;
 			crtc_h = height;
 		}
@@ -768,20 +785,20 @@ static int alloc_plane(int plane_pid, uint32_t fourcc_format, int width, int hei
 		printf("fd:%d, plane_id:%d, dev->crtc_id:%d, out_fb_id:%d\n", dev->fd, plane->plane_id, dev->crtc_id,
 			   plane->fb_info.fbi.fb_id);
 		/* note src coords (last 4 args) are in Q16 format */
-		ret = drmModeSetPlane(dev->fd, plane->plane_id, dev->crtc_id, plane->fb_info.fbi.fb_id, 0, crtc_x, crtc_y, crtc_w,
+		ret = drmModeSetPlane(dev->fd, plane->plane_id, dev->crtc_id, plane->fb_info.fbi.fb_id, 0, x, y, crtc_w,
 							  crtc_h, 0, 0, width << 16, height << 16);
 		if (ret)
 		{
 			fprintf(stderr, "failed to enable plane: %s\n", strerror(errno));
-			free_plane(plane_pid);
+			free_plane(plane);
 		}
 		else
 		{
-			plane->x = crtc_x;
-			plane->y = crtc_y;
+			plane->fb_info.x = x;
+			plane->fb_info.y = y;
 			plane->crtc_w = crtc_w;
 			plane->crtc_h = crtc_h;
-			plane->fullscreen = fullscreen;
+			plane->fb_info.fullscreen = fullscreen;
 		}
 	}
 	return ret;
@@ -794,16 +811,17 @@ void free_planes()
 	{
 		for (int i = 0; i < dev->count_planes; i++)
 		{
-			free_plane(i);
-			if (dev->planes[i].formats)
+			plane_s *plane = &dev->planes[i];
+			free_plane(plane);
+			if (plane->formats)
 			{
-				free(dev->planes[i].formats);
-				dev->planes[i].formats = NULL;
+				free(plane->formats);
+				plane->formats = NULL;
 			}
-			if (dev->planes[i].properties)
+			if (plane->properties)
 			{
-				free(dev->planes[i].properties);
-				dev->planes[i].properties = NULL;
+				free(plane->properties);
+				plane->properties = NULL;
 			}
 		}
 		free(dev->planes);
@@ -840,44 +858,43 @@ static int set_plane_pos(plane_s *plane, int x, int y)
 }
 
 //***************************Extern*************************
-int DrmHelperSetZpos(int fb_id, uint8_t value)
+int DrmHelperSetZpos(DhPlaneInfo *fb_info, uint8_t value)
 {
 	int ret = -EINVAL;
-	if (fb_id > 0 && fb_id <= dev->count_planes)
+	if (fb_info->plane_uid > 0 && fb_info->plane_uid <= dev->count_planes)
 	{
-		plane_s *plane = &dev->planes[fb_id - 1];
+		plane_s *plane = &dev->planes[fb_info->plane_uid - 1];
 		ret = set_plane_property_zpos(plane, value);
 		if (ret == 0)
 		{
-			set_plane_pos(plane, plane->x, plane->y);
+			set_plane_pos(plane, plane->fb_info.x, plane->fb_info.y);
 		}
 	}
 	else
 	{
-		fprintf(stderr, "DrmHelperSetZpos: Invalid fb_id: %d\n", fb_id);
+		fprintf(stderr, "DrmHelperSetZpos: Invalid plane: %d\n", fb_info->plane_uid);
 	}
 	return ret;
 }
 
-int DrmHelperSetPlanePos(int fb_id, int x, int y)
+int DrmHelperSetPlanePos(DhPlaneInfo *fb_info, int x, int y)
 {
 	int ret = -EINVAL;
-	if (fb_id > 0 && fb_id <= dev->count_planes)
+	if (fb_info->plane_uid > 0 && fb_info->plane_uid <= dev->count_planes)
 	{
-		ret = set_plane_pos(&dev->planes[fb_id - 1], x, y);
+		ret = set_plane_pos(&dev->planes[fb_info->plane_uid - 1], x, y);
 	}
 	else
 	{
-		fprintf(stderr, "DrmHelperSetPlanePos: Invalid fb_id: %d\n", fb_id);
+		fprintf(stderr, "DrmHelperSetPlanePos: Invalid plane: %d\n", fb_info->plane_uid);
 	}
 	return ret;
 }
 
-int DrmHelperAllocFb(dh_fbtype_t type, uint32_t fourcc_format, int width, int height, int x, int y,
-					 uint8_t fullscreen, dh_fb_info_s *fb_info)
+DhPlaneInfo *DrmHelperAllocFb(DhPlaneType type, uint32_t fourcc_format, uint16_t width, uint16_t height,
+							  uint16_t x, uint16_t y, uint8_t fullscreen)
 {
-	int ret = -EINVAL;
-	memset(fb_info, 0, sizeof(dh_fb_info_s));
+	DhPlaneInfo *fbi = NULL;
 	switch (type)
 	{
 	case plane_type_cursor:
@@ -885,46 +902,47 @@ int DrmHelperAllocFb(dh_fbtype_t type, uint32_t fourcc_format, int width, int he
 		for (int i = 0; i < dev->count_planes; i++)
 		{
 			plane_s *plane = &dev->planes[i];
-			if (plane->type == type && plane->fb_info.map_bufs[0] == NULL)
+			if (plane->fb_info.type == type && plane->fb_info.map_bufs[0] == NULL)
 			{
-				ret = alloc_plane(i, fourcc_format, width, height, x, y, fullscreen);
-				if (ret == 0)
+				int rt = alloc_plane(plane, fourcc_format, width, height, x, y, fullscreen);
+				if (rt == 0)
 				{
-					memcpy(fb_info, &plane->fb_info.fbi, sizeof(dh_fb_info_s));
-					ret = i + 1;
+					fbi = &plane->fb_info;
 					break;
 				}
 			}
 		}
 		break;
 	case plane_type_primary:
-		ret = alloc_primary_fb(fourcc_format, width, height);
-		if (ret == 0)
+	{
+		int rt = alloc_primary_fb(fourcc_format, width, height, x, y);
+		if (rt == 0)
 		{
-			memcpy(fb_info, &dev->primary_fb, sizeof(dh_fb_info_s));
+			fbi = &dev->primary_fb;
 		}
-
-		break;
+	}
+	break;
 	default:
 		fprintf(stderr, "Invalid fb type: %d\n", type);
 	}
-	return ret;
+
+	return fbi;
 }
 
-int DrmHelperFreeFb(int fb_id)
+int DrmHelperFreeFb(DhPlaneInfo *fb_info)
 {
 	int ret = 0;
-	if (fb_id == 0)
+	if (fb_info->plane_uid == 0)
 	{ // primary_fb
 		free_primary_fb();
 	}
-	else if (fb_id > 0 && fb_id <= dev->count_planes)
+	else if (fb_info->plane_uid > 0 && fb_info->plane_uid <= dev->count_planes)
 	{
-		free_plane(fb_id - 1);
+		free_plane(&dev->planes[fb_info->plane_uid - 1]);
 	}
 	else
 	{
-		fprintf(stderr, "DrmHelperFreeFb: Invalid fb_id: %d\n", fb_id);
+		fprintf(stderr, "DrmHelperFreeFb: Invalid plane: %d\n", fb_info->plane_uid);
 		ret = -EINVAL;
 	}
 	return ret;
@@ -948,39 +966,61 @@ void DrmHelperFree(void)
 	}
 }
 //
-int DrmHelperInit(int drm_id)
+DhHwInfo *DrmHelperInit(int drm_id)
 {
 	if (dev)
 	{
 		fprintf(stderr, "DrmHelper already in use\n");
-		return -EBUSY;
+		return NULL;
 	}
 
 	dev = calloc(1, sizeof(dev_s));
 	if (!dev)
 	{
 		fprintf(stderr, "Error memory alloc for dev\n");
-		return -ENXIO;
+		return NULL;
 	}
 	dev->fd = -1;
 
 	char dp_name[32];
 	snprintf(dp_name, sizeof(dp_name), "/dev/dri/card%d", drm_id);
 
-	int ret = -ENXIO;
 	dev->fd = drm_open(dp_name);
 	if (dev->fd >= 0)
 	{
-		ret = drm_find_crt();
+		int ret = drm_find_crt();
 		if (ret == 0)
 		{
 			ret = parse_planes(dev);
 			if (ret == 0)
 			{
-				return ret;
+				return &dev->dh_hw_info;
+			}
+			else
+			{
+				fprintf(stderr, "Error parse_planes\n");
 			}
 		}
+		else
+		{
+			fprintf(stderr, "Error drm_find_crt\n");
+		}
+	}
+	else
+	{
+		fprintf(stderr, "Error drm_open\n");
 	}
 	DrmHelperFree();
-	return ret;
+	return NULL;
+}
+
+__attribute__((constructor)) void construct()
+{
+	// printf("construct\n");
+	dev = NULL;
+}
+
+__attribute__((destructor)) void destruct()
+{
+	DrmHelperFree();
 }
