@@ -55,6 +55,7 @@ extern "C"
 	int DrmHelperSetPlanePos(DhPlaneInfo *fb_info, int x, int y);
 	int DrmHelperSetZpos(DhPlaneInfo *fb_info, uint8_t zpos);
 
+// For test build with old libdrm
 #ifndef drmModeMapDumbBuffer
 	extern int drmModeMapDumbBuffer(int fd, uint32_t handle, uint64_t *offset);
 	extern int drmModeCreateDumbBuffer(int fd, uint32_t width, uint32_t height, uint32_t bpp, uint32_t flags, uint32_t *handle,
