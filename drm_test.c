@@ -1,5 +1,3 @@
-/* please refer better example: https://github.com/dvdhrm/docs/tree/master/drm-howto/ */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>

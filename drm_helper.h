@@ -1,7 +1,6 @@
 #ifndef DRM_HELPER_H
 #define DRM_HELPER_H
 
-// #include "drm.h"
 #include <drm_fourcc.h>
 #include <xf86drmMode.h>
 #include <stdint.h>
@@ -27,10 +26,10 @@ extern "C"
 		uint16_t x, y;
 		uint8_t zpos;
 		uint8_t fullscreen;
-		//		uint8_t depth;
+		//uint8_t depth;
 		uint8_t bpp;
 		uint64_t fb_size;
-		void *map_bufs[3]; // void *fb_buf -> map_bufs[0]
+		void *map_bufs[3];
 	} DhPlaneInfo;
 
 	// read only, do not change
@@ -47,7 +46,7 @@ extern "C"
 
 	// for primary: "fullscreen" not used
 	// if "width" and or "height" = 0 -> set default
-	// return fb_id or -Error
+	// return fb_id or NULL
 	DhPlaneInfo *DrmHelperAllocFb(DhPlaneType type, uint32_t fourcc_format, uint16_t width, uint16_t height,
 								  uint16_t x, uint16_t y, uint8_t fullscreen);
 	int DrmHelperFreeFb(DhPlaneInfo *fb_info);

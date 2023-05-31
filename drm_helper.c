@@ -46,7 +46,7 @@
 typedef struct _plane_s
 {
 	uint32_t plane_id;		// ro
-							// Formats supported
+	// Formats supported
 	uint32_t count_formats; // ro
 	uint32_t *formats;		// ro
 	// Props
@@ -354,7 +354,6 @@ static int bo_map(int fd, DhPlaneInfo *fb_info)
 	if (map == MAP_FAILED)
 		return -EINVAL;
 
-	// TODO fbi->fb_info.offsets[0] = offset;
 	fb_info->map_bufs[0] = map;
 
 	return 0;
